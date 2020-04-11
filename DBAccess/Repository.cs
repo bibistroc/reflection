@@ -1,49 +1,55 @@
 ﻿using DBAccess.Attributes;
+using DBAccess.Exceptions;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 
 namespace DBAccess
 {
-    public class Repository<TTable> where TTable : Table
+    public class Repository<TTable> : IRepository<TTable>
+        where TTable : Table
     {
         public string TableName { get; private set; }
 
-        private readonly Type currentTableType;
+        private readonly Type tableType;
+
+        private List<PropertyInfo> tableFieldPropertyInfos;
+        private PropertyInfo primaryKeyFieldPropertyInfo;
+        private List<string> tableFieldNames;
+        private string primaryKeyFieldName;
 
         public Repository()
         {
-            currentTableType = typeof(TTable);
+            tableType = typeof(TTable);
 
-            TableNameAttribute tableNameAttrib = currentTableType.GetCustomAttribute(typeof(TableNameAttribute), true) as TableNameAttribute;
+            TableNameAttribute tableNameAttrib = tableType.GetCustomAttribute(typeof(TableNameAttribute), true) as TableNameAttribute;
 
             TableName = tableNameAttrib.Name;
+            PropertyInfo[] allTableFieldsProperties = tableType.GetProperties();
+
+            SetupTablePrimaryField(allTableFieldsProperties);
+            SetupTableNonPrimaryFields(allTableFieldsProperties);
         }
 
         public string Select()
         {
-            PropertyInfo[] properties = currentTableType.GetProperties();
+            return Select(null);
+        }
 
-            Dictionary<string, bool> tableMembers = new Dictionary<string, bool>();
+        public string Select(TTable entity)
+        {
+            Dictionary<string, string> selectFields = GetFieldsWithValues(entity);
 
-            foreach (var prop in properties)
+            string selectQuery = $"SELCT {string.Join(", ", selectFields.Keys)} FROM {TableName}";
+
+            IEnumerable<KeyValuePair<string, string>> whereClause = selectFields.Where(w => !string.IsNullOrWhiteSpace(w.Value));
+            if (whereClause.Any())
             {
-                var isPrimary = prop.GetCustomAttribute(typeof(PrimaryKeyAttribute)) != null;
-                var keyNameAttribute = (prop.GetCustomAttribute(typeof(KeyAttribute)) as KeyAttribute);
-
-                var name = keyNameAttribute?.Name ?? prop.Name;
-
-                tableMembers.Add(name, isPrimary);
+                selectQuery += $" WHERE {string.Join(", ", whereClause.Select(w => $"'{w.Key}'='{w.Value}'"))}";
             }
 
-            var selectQuery = $"SELCT {string.Join(",", tableMembers.Keys)} FROM {TableName}";
-
             return selectQuery;
-
-            //Dictionary<string, bool> tableMembers = properties.ToDictionary(
-            //    prop => prop.Name, 
-            //    prop => prop.GetCustomAttribute(typeof(PrimaryKeyAttribute), true) != null
-            //);
         }
 
         public string Insert(TTable entity)
@@ -55,9 +61,25 @@ namespace DBAccess
 
         public string Update(TTable entity)
         {
+            string primaryKeyValue = primaryKeyFieldPropertyInfo.GetValue(entity)?.ToString();
+            if (primaryKeyValue == null)
+            {
+                throw new InvalidCrudOperationException($"Update operation executed on {TableName} without primary key value.");
+            }
+
+            IEnumerable<string> fieldsWithValues = GetFieldsWithValues(entity)
+                .Where(f => f.Value != null)
+                .Select(fwv => $"'{fwv.Key}'='{fwv.Value}'");
+
+            string querySet = string.Join(", ", fieldsWithValues);
+            string queryWhere = $"'{primaryKeyFieldName}'='{primaryKeyValue}'";
+
+            string updateQuery = $"UPDATE {TableName} SET {querySet} WHERE {queryWhere}";
+
+            return updateQuery;
             // UPDATE <TABLENAME> SET <FIELD> = "<ENTITY.FIELD_VALUE>" WHERE <PRIMARY_KEY_FIELD> = <ENTITY.PRIMARY_FIELD_VALUE_FROM_ENTITY>
             // CoolTable: UPDATE myCoolTable SET myName = 'entity.Name' WHERE myId = 'entity.Id'
-            throw new NotImplementedException();
+            //throw new NotImplementedException();
         }
 
         public string Delete(TTable entity)
@@ -72,5 +94,69 @@ namespace DBAccess
             // DELETE FROM <TABLENAME> WHERE <PRIMARY_KEY_FIELD> = <ENTITY.PRIMARY_FIELD_VALUE_FROM_ENTITY>
             throw new NotImplementedException();
         }
+
+        #region SetupFields
+        private void SetupTableNonPrimaryFields(PropertyInfo[] allTableFieldsProperties)
+        {
+            tableFieldPropertyInfos = allTableFieldsProperties.Where(f => f.GetCustomAttribute(typeof(PrimaryKeyAttribute)) == null).ToList();
+
+            tableFieldNames = tableFieldPropertyInfos
+                .Select(pf =>
+                {
+                    KeyAttribute keyNameAttribute = (pf.GetCustomAttribute(typeof(KeyAttribute)) as KeyAttribute);
+
+                    return keyNameAttribute?.Name ?? pf.Name;
+                })
+                .ToList();
+        }
+
+        private void SetupTablePrimaryField(PropertyInfo[] allTableFieldsProperties)
+        {
+            List<PropertyInfo> primaryKeyFields = allTableFieldsProperties.Where(f => f.GetCustomAttribute(typeof(PrimaryKeyAttribute)) != null).ToList();
+            if (primaryKeyFields.Count != 1)
+            {
+                throw new InvalidRepositoryTableException($"Table {TableName} has {primaryKeyFields.Count} primary fields and should have one.");
+            }
+            primaryKeyFieldPropertyInfo = primaryKeyFields.First();
+
+            KeyAttribute primaryKeyKeyNameAttribute = (primaryKeyFieldPropertyInfo.GetCustomAttribute(typeof(KeyAttribute)) as KeyAttribute);
+
+            primaryKeyFieldName = primaryKeyKeyNameAttribute?.Name ?? primaryKeyFieldPropertyInfo.Name;
+        }
+        #endregion SetupFields
+
+        private Dictionary<string, string> GetFieldsWithValues(TTable entity)
+        {
+            Dictionary<string, string> fieldsWithValues = new Dictionary<string, string>();
+
+            foreach (PropertyInfo prop in tableFieldPropertyInfos)
+            {
+                KeyAttribute keyNameAttribute = (prop.GetCustomAttribute(typeof(KeyAttribute)) as KeyAttribute);
+
+                string name = keyNameAttribute?.Name ?? prop.Name;
+
+                string value = entity != null ? prop.GetValue(entity)?.ToString() : null;
+
+                fieldsWithValues.Add(name, value);
+            }
+
+            return fieldsWithValues;
+        }
+
+        #region BonusYield
+        private IEnumerable<KeyValuePair<string, string>> BonusGetFieldsWithValuesIEnumerable(TTable entity)
+        {
+            foreach (PropertyInfo prop in tableFieldPropertyInfos)
+            {
+                KeyAttribute keyNameAttribute = (prop.GetCustomAttribute(typeof(KeyAttribute)) as KeyAttribute);
+
+                string name = keyNameAttribute?.Name ?? prop.Name;
+
+                string value = entity != null ? prop.GetValue(entity)?.ToString() : null;
+
+                yield return new KeyValuePair<string, string>(name, value);
+            }
+        }
+        #endregion BonusYield
     }
 }

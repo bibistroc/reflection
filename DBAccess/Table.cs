@@ -1,6 +1,6 @@
 ﻿namespace DBAccess
 {
-    public class Table
+    public abstract class Table
     {
     }
 }
