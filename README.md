@@ -1,2 +1,3 @@
-# reflection
-This is repository to help students understand Reflection
+# Reflection presentation
+
+This is a repository to help students understand how to use Reflection.
